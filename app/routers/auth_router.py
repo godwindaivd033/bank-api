@@ -1,0 +1,70 @@
+from sqlmodel import Session, select
+from app.auth import  hash_password, verify_password, create_access_token
+from app.database import get_session
+from fastapi import  Depends, HTTPException, APIRouter
+
+from fastapi.security import OAuth2PasswordRequestForm
+from app.models.user import User, UserRead, UserCreate
+
+
+
+router = APIRouter(tags= ["authentication"])
+
+
+
+
+#---Creating the endpoint that aids users to register---
+@router.post("/register", response_model= UserRead, status_code= 201)
+def reg_user(create_data: UserCreate, session: Session= Depends(get_session)):
+   
+    #---Confirming the user hasn't registered previously to prevent duplication---
+    existing_user= session.exec(select(User).where(User.email== create_data.email)).first()
+    if existing_user:
+        raise HTTPException(status_code= 400, detail= "Email already exist")
+    
+    #---If not registered, hashing the password before commiting the data to the database---
+    hashed_password= hash_password(create_data.password)
+
+    #--Configuring the data and commit--
+    user= User(first_name= create_data.first_name,
+    last_name= create_data.last_name,
+    email= create_data.email,
+    password= hashed_password,
+    phone_number= create_data.phone_number)
+
+
+    session.add(user)
+    session.commit()
+    session.refresh(user)
+
+    return user
+
+
+
+#----Creating the endpoint that allows user to login---
+@router.post("/login", status_code= 200)
+def login_user(user_data: OAuth2PasswordRequestForm= Depends(), session: Session= Depends(get_session)):
+
+   
+    #---Confirming the user exist in the database---
+    user= session.exec(select(User).where(User.email == user_data.username)).first()
+    if not user:
+        raise HTTPException(status_code= 401, detail= "Invalid login credentials")
+    
+    #---If user, then verifying the user password--
+    verify_pwd= verify_password(user_data.password, user.password)
+
+    if not verify_pwd:
+        raise HTTPException(status_code= 401, detail= "Invalid login credentials")
+    
+    
+    #---Verifying that the user is active---
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="Account is inactive")
+    
+    #---If verify_pwd, create access token--
+    access_token = create_access_token(user.email, user.role)
+
+    return {
+        "access_token": access_token,
+        "token_type": "bearer"}
