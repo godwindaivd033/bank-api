@@ -5,7 +5,8 @@ from app.database import get_session
 from fastapi import APIRouter, Query, Depends, HTTPException
 from app.services.transaction_service import deposit_helper_function, withdrawal_helper_function, make_transfer, fetch_transaction_history, get_account_or_404, fetch_reference, validate_date_range, calculate_statement_totals,get_authenticated_user_or_404
 from app.services.logger import logger
-
+from app.routers.websocket import manager
+from fastapi.concurrency import run_in_threadpool
 
 #---Configuring the router---
 router= APIRouter(prefix= "/transaction", tags= ["transactions"])
@@ -30,25 +31,39 @@ def create_deposit_transactions(transaction_create: TransactionCreate, session: 
     return transaction_receipt    
 
 
-
-#---Creating the endpoint that enables users to make a withdrawal transaction---
-@router.post("/withdraw", response_model= TransactionRead, status_code= 201)
-def create_withdrawal_transaction(transaction: TransactionCreate, session: Session= Depends(get_session), active_user: dict= Depends(get_user_with_role)):
-
+@router.post("/withdraw", response_model=TransactionRead, status_code=201)
+async def create_withdrawal_transaction(
+    transaction: TransactionCreate,
+    session: Session = Depends(get_session),
+    active_user: dict = Depends(get_user_with_role)
+):
     logger.info("Withdrawal transaction requested.")
 
-    transaction_receipt= withdrawal_helper_function(session, active_user, transaction)
-        
-    #---Adding it to the database---
+    transaction_receipt = await run_in_threadpool(
+        withdrawal_helper_function,
+        session,
+        active_user,
+        transaction
+    )
+
+    # Add transaction to database
     session.add(transaction_receipt)
     session.commit()
     session.refresh(transaction_receipt)
 
-    logger.info(f"Withdrawal transaction {transaction_receipt.reference} created successfully.")
+    logger.info(
+        f"Withdrawal transaction "
+        f"{transaction_receipt.reference} created successfully."
+    )
+
+    # Notify the user through WebSocket
+    await manager.send_to_user(
+        active_user["id"],
+        f"Withdrawal of {transaction_receipt.amount} successful. "
+        f"New balance: {transaction_receipt.balance_after}"
+    )
 
     return transaction_receipt
-
-
 
 
 #---Creating the endpoint that aids user in carrying out transfer---

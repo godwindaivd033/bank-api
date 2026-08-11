@@ -3,6 +3,7 @@ from app.services.logger import logger
 from app.models.account import Account, AccountStatus
 from app.models.user import User
 from sqlmodel import Session, select
+import secrets
 
 
 
@@ -10,18 +11,14 @@ from sqlmodel import Session, select
 
 #---Creating the helper method that generates a unique account number---
 def generate_account_number(session: Session) -> str:
-
-    #---Getting the most recently created account---
-    last_account = session.exec(select(Account).order_by(Account.id.desc())).first()
-
-    #---If no account exists, start from the first account number---
-    if not last_account:
-        logger.info("Generated first account number.")
-        return "1000000001"
-
-    #---Otherwise increment the last account number---
-    logger.info("Generated new account number.")
-    return str(int(last_account.account_number) + 1)
+    while True:
+        account_numbers = "66" + "".join(str(secrets.randbelow(10)) 
+                                for _ in range(8)
+                                ) 
+    
+        existing= session.exec(select(Account).where(Account.account_number == account_numbers)).first()
+        if not existing:
+            return account_numbers
 
 
 
