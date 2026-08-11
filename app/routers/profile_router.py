@@ -6,6 +6,7 @@ from app.models.profile import UserProfileRead, UserProfileUpdate, ChangePasswor
 from app.services.beneficiary_service import get_authenticated_user
 from app.services.logger import logger
 from app.services.profile_services import apply_profile_update, serialize_user_profile, validate_password_update
+from  fastapi.concurrency import run_in_threadpool
 
 
 
@@ -16,10 +17,10 @@ router= APIRouter(prefix= "/profile", tags= ["profile"])
 
 #---Creating the endpoint that enables user to get their profile---
 @router.get("/", response_model= UserProfileRead, status_code= 200)
-def get_profile(session: Session= Depends(get_session), active_user: dict= Depends(get_user_with_role)):
+async def get_profile(session: Session= Depends(get_session), active_user: dict= Depends(get_user_with_role)):
 
     #---Authenticating the user---
-    user= get_authenticated_user(session, active_user)
+    user= await run_in_threadpool(get_authenticated_user,session, active_user)
     logger.info(f"Profile requested by user {user.id}.")
    
     #---Getting and returning the user's profile---
@@ -38,10 +39,10 @@ def get_profile(session: Session= Depends(get_session), active_user: dict= Depen
 
 #---Creating the endpoint that enables user to update their profile---
 @router.patch("/update", response_model= UserProfileRead, status_code= 200)
-def update_profile(profile_update: UserProfileUpdate, session: Session= Depends(get_session), active_user: dict= Depends(get_user_with_role)):
+async def update_profile(profile_update: UserProfileUpdate, session: Session= Depends(get_session), active_user: dict= Depends(get_user_with_role)):
  
     #---Authenticating the user---
-    user= get_authenticated_user(session, active_user)
+    user= await run_in_threadpool(get_authenticated_user,session, active_user)
     logger.info(f"Profile update requested by user {user.id}.")
     
     #---Validating changes were made and commiting changes---
@@ -63,14 +64,14 @@ def update_profile(profile_update: UserProfileUpdate, session: Session= Depends(
 
 #---Creating the endpoint that enables a user to update password---
 @router.patch("/update_password", status_code=200)
-def change_password(
+async def change_password(
     password_update: ChangePassword,
     session: Session = Depends(get_session),
     active_user: dict = Depends(get_user_with_role),
 ):
 
     #---Authenticating the user---
-    user = get_authenticated_user(session, active_user)
+    user = await run_in_threadpool(get_authenticated_user, session, active_user)
     logger.info(f"Password change requested by user {user.id}.")
 
     validate_password_update(password_update, user)
