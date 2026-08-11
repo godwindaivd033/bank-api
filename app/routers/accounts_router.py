@@ -1,10 +1,8 @@
 #---Building the account endpoint---
 from sqlmodel import Session, select
-from fastapi import Depends, HTTPException
 from fastapi import APIRouter
 from app.auth import get_user_with_role
 from app.models.account import Account, AccountCreate, AccountRead, AccountUpdate
-from app.models.user import User
 from app.database import get_session
 from app.models.enums import AccountStatus
 from app.services.logger import logger
