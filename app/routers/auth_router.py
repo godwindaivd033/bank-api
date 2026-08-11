@@ -5,6 +5,7 @@ from fastapi import  Depends, HTTPException, APIRouter
 
 from fastapi.security import OAuth2PasswordRequestForm
 from app.models.user import User, UserRead, UserCreate
+from fastapi.concurrency import run_in_threadpool
 
 
 
@@ -15,10 +16,12 @@ router = APIRouter(tags= ["authentication"])
 
 #---Creating the endpoint that aids users to register---
 @router.post("/register", response_model= UserRead, status_code= 201)
-def reg_user(create_data: UserCreate, session: Session= Depends(get_session)):
+async def reg_user(create_data: UserCreate, session: Session= Depends(get_session)):
    
     #---Confirming the user hasn't registered previously to prevent duplication---
-    existing_user= session.exec(select(User).where(User.email== create_data.email)).first()
+    existing_user= await run_in_threadpool(lambda :session.exec(select(User).where(User.email== create_data.email)).first())
+
+    #---Checking if the user data is still recorded in the database---
     if existing_user:
         raise HTTPException(status_code= 400, detail= "Email already exist")
     
@@ -43,11 +46,11 @@ def reg_user(create_data: UserCreate, session: Session= Depends(get_session)):
 
 #----Creating the endpoint that allows user to login---
 @router.post("/login", status_code= 200)
-def login_user(user_data: OAuth2PasswordRequestForm= Depends(), session: Session= Depends(get_session)):
+async def login_user(user_data: OAuth2PasswordRequestForm= Depends(), session: Session= Depends(get_session)):
 
    
     #---Confirming the user exist in the database---
-    user= session.exec(select(User).where(User.email == user_data.username)).first()
+    user= await run_in_threadpool(lambda :session.exec(select(User).where(User.email == user_data.username)).first())
     if not user:
         raise HTTPException(status_code= 401, detail= "Invalid login credentials")
     
