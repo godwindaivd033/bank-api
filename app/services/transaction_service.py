@@ -9,6 +9,19 @@ from app.utilies.ref_generator import generate_reference
 from app.services.logger import logger
 from decimal import Decimal
 
+def get_transactions_for_statement(session: Session, account_id: int, starting_date, ending_date) -> list[Transaction]:
+    return session.exec(
+        select(Transaction).where(
+            Transaction.account_id == account_id,
+            Transaction.created_at >= starting_date,
+            Transaction.created_at <= ending_date
+        ).order_by(Transaction.created_at.desc())
+    ).all()
+
+
+
+
+
 
 def validate_transaction_request(session: Session, active_user: dict, transaction_create: TransactionCreate) -> Account:
     email= active_user.get("sub")
