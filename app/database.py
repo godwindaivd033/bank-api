@@ -7,7 +7,7 @@ from app.auth import hash_password
 
 
 #---Creating the database link---
-db_link= "sqlite:///data.db"
+db_link= "postgresql+psycopg://postgres:Daveed@localhost:5432/bank_db"
 
 #---Creating the engine---
 engine= create_engine(db_link, echo= True)
