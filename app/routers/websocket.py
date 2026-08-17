@@ -3,7 +3,6 @@ from sqlmodel import select
 from app.services.user_service import get_user_by_email
 from app.models.user import User
 from app.services.connectionmanager import manager
-from app.database import get_session
 from app.auth import decode_access_token
 from fastapi.concurrency import run_in_threadpool
 
