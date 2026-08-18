@@ -10,6 +10,7 @@ from app.routers.transaction_router import router as transactions
 from app.routers.profile_router import router as profile
 from app.routers.dashboard_router import router as dashboard
 from app.routers.websocket import router as websocket_router
+from test.test_redis import router as redis_router
 from fastapi import FastAPI, Request
 from app.database import create_db_and_table, create_admin
 
@@ -63,5 +64,6 @@ app.include_router(profile)
 app.include_router(transactions)
 app.include_router(dashboard)
 app.include_router(websocket_router)
+app.include_router(redis_router)
 
 
