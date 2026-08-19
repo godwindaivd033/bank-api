@@ -3,7 +3,7 @@ import pytest
 from sqlmodel import SQLModel, Session, create_engine
 
 from app.models.user import User
-from app.models.account import Account
+from app.models.account import Account, AccountCreate, AccountUpdate
 from app.models.transaction import Transaction, TransactionCreate, TransferCreate
 from decimal import Decimal
 
@@ -123,3 +123,6 @@ def transfer(account, another_account):
         amount=Decimal("1000"),
         description="Test transfer",
     )
+
+
+@pytest.fixture
