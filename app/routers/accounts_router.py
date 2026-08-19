@@ -50,6 +50,9 @@ async def create_account(user_create: AccountCreate, session: Session = Depends(
 
     logger.info(f"Account {account.account_number} created for user {existing_user.id}.")
 
+    #---Invalidate the cached account list, since it's now out of date---
+    await run_in_threadpool(redis_client.delete, f"account:{existing_user.id}")
+
     return account
 
 
@@ -134,51 +137,12 @@ async def update_user_account(account_id: int, user_update: AccountUpdate, sessi
 
     #---If confirmation was valid, ensure that the update was executed before proceeding---
     account = await run_in_threadpool(apply_account_update, session, account, user_update, account_id)
-
+    await run_in_threadpool(redis_client.delete, f"account: {account_id}")
     return account
 
 
 
-
-
-#---Creating the endpoint that allows user to update account---
-@router.patch("/{account_id}", response_model= AccountRead, status_code= 200)
-async def update_user_account(account_id: int, user_update: AccountUpdate, session: Session= Depends(get_session), active_user: dict= Depends(get_user_with_role)):
-
-   #---Getting the logged in user by using the access token email---
-    email= active_user.get("sub")
-    logger.info(f"Account update requested by {email}.")
-
-    #---Querying the database to confirm the user still exist in the database---
-    user = await run_in_threadpool(get_authenticated_user_or_404, session, active_user)
-
-    #---Making the cache_key---
-    cache_key= f"account:{account_id}"
-
-    #---Try grabbing request from the redis cache---
-    cached= await run_in_threadpool(redis_client.get, cache_key)
-    logger.info("Requesting data from the redis cache")
-
-    #---if cached, convert it to a load string---
-    if cached:
-        logger.info(f" Request hit the cache key")
-        json.loads(cached)
-
-        
-
-
-    #---If the user exist, find the user account using the requested id---
-    account = await run_in_threadpool(get_account_by_id_or_404, session, account_id, user, active_user)
-
-    #---If confirmation was valid, ensure that the update was executed before proceeding---
-    account = await run_in_threadpool(apply_account_update, session, account, user_update, account_id)
-
-    return account
-
-
-
-
-#---Creating the endpoint that aids in the closing of the user's account(s)---
+#---Creating the endpoint that aids in the closing of the user's account---
 @router.patch("/{account_id}/close", response_model= AccountRead, status_code= 200)
 async def close_user_account(account_id: int, session: Session= Depends(get_session), active_user: dict= Depends(get_user_with_role)):
 
@@ -202,5 +166,7 @@ async def close_user_account(account_id: int, session: Session= Depends(get_sess
     session.refresh(account)
 
     logger.info(f"Account {account_id} closed successfully.")
+    await run_in_threadpool(redis_client.delete, f"account:{account_id}")
 
+    logger.info("redis client data has been cleaned up.")
     return account
