@@ -8,6 +8,8 @@ from app.models.enums import AccountStatus, TransactionReferencePrefix
 from app.utilies.ref_generator import generate_reference
 from app.services.logger import logger
 from decimal import Decimal
+import json
+from app.redis_client import redis_client
 
 def get_transactions_for_statement(session: Session, account_id: int, starting_date, ending_date) -> list[Transaction]:
     return session.exec(
@@ -146,7 +148,7 @@ def withdrawal_helper_function(session: Session, active_user: dict, transaction:
 
 def make_transfer(session: Session, active_user: dict, transfer_create: TransferCreate) -> tuple[Transaction, Transaction]:
 
-    #---Extracting the logedd-in user email from the access token---
+    #---Extracting the logged-in user email from the access token---
     email= active_user.get("sub")
     logger.info(f"Transfer request initiated by {email}.")
 
@@ -267,7 +269,7 @@ def get_authenticated_user(session: Session, active_user: dict):
 
 
 
-def fetch_transaction_history(session: Session, account_id: int, active_user: dict, skip: int, limit: int ) -> list[Transaction]:
+def fetch_transaction_history(session: Session, account_id: int, active_user: dict, skip: int, limit: int ) -> list[dict]:
 
     user = get_authenticated_user(session, active_user)
 
@@ -285,7 +287,22 @@ def fetch_transaction_history(session: Session, account_id: int, active_user: di
     if account.user_id != user.id and active_user.get("role") != "Admin":
         logger.warning(f"Unauthorized access to transaction history for account {account_id} by user {user.id}.")
         raise HTTPException(status_code= 403, detail= "Forbidden request")
-    
+
+    #---Making the redis cache_key---
+    cache_key= f"transactions:{account_id}:{skip}:{limit}"
+
+
+
+    #---Getting the requested data from the redis_cache---
+    cached= redis_client.get(cache_key)
+    if cached:
+      
+        transaction_data= json.loads(cached)
+      
+        logger.info(f"Request{cache_key} HIT redis cache")
+        return transaction_data
+
+    logger.info(f"Request for {cache_key} miss, now querying the database")
     #---Getting the transaction---
     transactions= session.exec(
         select(Transaction)
@@ -294,41 +311,58 @@ def fetch_transaction_history(session: Session, account_id: int, active_user: di
         .offset(skip)
         .limit(limit)
     ).all()
+    #---Converting the database objects to dictionaries--
+    transaction_data= [r.model_dump(mode= "json") for r in transactions]
+
+    #---Store in redis for 60 seconds---
+    redis_client.set(cache_key, json.dumps(transaction_data), ex= 60)
+
 
     logger.info(f"Retrieved {len(transactions)} transaction(s) for account {account_id}.")
 
-    return transactions
+    return transaction_data
 
 
-def fetch_reference(session: Session, active_user: dict, ref_id: str) -> Transaction:
+def fetch_reference(session: Session, active_user: dict, ref_id: str) -> dict:
 
     user = get_authenticated_user(session, active_user)
-
     logger.info(f"Fetching transaction reference {ref_id}.")
 
-    transaction= session.exec(select(Transaction).where(Transaction.reference ==ref_id)).first()
+    cache_key = f"transaction:{ref_id}"
+    cached = redis_client.get(cache_key)
+
+    if cached:
+        transaction_data = json.loads(cached)         
+        if transaction_data["user_id"] != user.id and active_user.get("role") != "Admin":
+            logger.warning(f"Unauthorized access to transaction {ref_id} by user {user.id}.")
+            raise HTTPException(status_code= 403, detail= "Forbidden request")
+        logger.info(f"Requested data for {cache_key} hit the redis cache")
+        return transaction_data
+
+    #---Cache MISS go to the database---
+    transaction = session.exec(select(Transaction).where(Transaction.reference == ref_id)).first()
 
     if not transaction:
         logger.warning(f"Transaction {ref_id} not found.")
-        raise HTTPException(status_code= 404, detail= "Transaction not found")
-    
+        raise HTTPException(status_code=404, detail="Transaction not found")
 
-    #---Getting the account attached to the transaction---
-    account= session.get(Account, transaction.account_id)
+    account = session.get(Account, transaction.account_id)
 
     if not account:
         logger.warning(f"Account for transaction {ref_id} not found.")
-        raise HTTPException(status_code= 404, detail= "Account nort found")
-    
+        raise HTTPException(status_code=404, detail="Account not found")
 
-    #---Verifying ownership---
     if account.user_id != user.id and active_user.get("role") != "Admin":
         logger.warning(f"Unauthorized access to transaction {ref_id} by user {user.id}.")
-        raise HTTPException(status_code= 403, detail= "Forbidden request")
+        raise HTTPException(status_code=403, detail="Forbidden request")
+
+    transaction_data = TransactionRead.model_validate(transaction).model_dump(mode="json")   # <-- defined HERE, line 2
+    transaction_data["user_id"] = account.user_id
+    redis_client.set(cache_key, json.dumps(transaction_data), ex=3600)
 
     logger.info(f"Transaction {ref_id} retrieved successfully.")
+    return transaction_data
 
-    return transaction
 
 
 

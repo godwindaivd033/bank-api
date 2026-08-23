@@ -1,8 +1,8 @@
 from sqlmodel import Session, select
 from app.auth import  hash_password, verify_password, create_access_token
 from app.database import get_session
-from fastapi import  Depends, HTTPException, APIRouter
-
+from fastapi import  Depends, HTTPException, APIRouter, Request
+from app.main import limiter
 from fastapi.security import OAuth2PasswordRequestForm
 from app.models.user import User, UserRead, UserCreate
 from fastapi.concurrency import run_in_threadpool
@@ -16,7 +16,8 @@ router = APIRouter(tags= ["authentication"])
 
 #---Creating the endpoint that aids users to register---
 @router.post("/register", response_model= UserRead, status_code= 201)
-async def reg_user(create_data: UserCreate, session: Session= Depends(get_session)):
+@limiter.limit("4/minute")
+async def reg_user(request: Request, create_data: UserCreate, session: Session= Depends(get_session)):
    
     #---Confirming the user hasn't registered previously to prevent duplication---
     existing_user= await run_in_threadpool(lambda :session.exec(select(User).where(User.email== create_data.email)).first())

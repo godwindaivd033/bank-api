@@ -1,5 +1,5 @@
 from sqlmodel import Session
-from fastapi import  APIRouter, Depends
+from fastapi import  APIRouter, Depends, Request
 from app.auth import get_user_with_role,  hash_password
 from app.database import get_session
 from app.models.profile import UserProfileRead, UserProfileUpdate, ChangePassword
@@ -7,6 +7,7 @@ from app.services.beneficiary_service import get_authenticated_user
 from app.services.logger import logger
 from app.services.profile_services import apply_profile_update, serialize_user_profile, validate_password_update
 from  fastapi.concurrency import run_in_threadpool
+from app.main import limiter
 
 
 

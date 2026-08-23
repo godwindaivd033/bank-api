@@ -1,5 +1,5 @@
-from sqlmodel import Session, select
-from app.models.transaction import StatementSearch, StatementSummary, TransferCreate,Transaction, TransactionCreate, TransactionRead
+from sqlmodel import Session
+from app.models.transaction import StatementSearch, StatementSummary, TransferCreate, TransactionCreate, TransactionRead
 from app.auth import get_user_with_role
 from app.database import get_session
 from fastapi import APIRouter, Query, Depends, HTTPException
@@ -7,6 +7,8 @@ from app.services.transaction_service import deposit_helper_function, withdrawal
 from app.services.logger import logger
 from app.routers.websocket import manager
 from fastapi.concurrency import run_in_threadpool
+import json
+from app.redis_client import redis_client
 
 #---Configuring the router---
 router= APIRouter(prefix= "/transaction", tags= ["transactions"])
@@ -126,7 +128,20 @@ async def get_statement_of_account(search: StatementSearch= Depends(), session: 
 
     validate_date_range(user, starting_date, ending_date)
 
- #---Getting the transactions for the statement---
+   #---making the redis cache key---
+    cache_key= f"statement: {account.id}" 
+
+    #---Try grabbing data from the redis cache---
+    logger.info(f"Querying the redis cache for {cache_key}") 
+    
+    cached= await run_in_threadpool(redis_client.get, cache_key)
+
+    if cached:
+        logger.info(f"Query for {cache_key} hit the redis cache")
+        return json.loads(cached)
+
+    #---If not, getting the transactions for the statement---
+    logger.info(f"Quert for {cache_key} miss redis, querying the database for request")
     transactions = await run_in_threadpool(
         get_transactions_for_statement, session, account.id, starting_date, ending_date
     )
@@ -161,10 +176,14 @@ async def get_statement_of_account(search: StatementSearch= Depends(), session: 
     )
 
     logger.info(f"Statement generated successfully for user {user.id}.")
+    #---Invalidating the redis cache---
+    statement_data= [statement.model_dump(mode= "json")]
+    await run_in_threadpool(redis_client.set, cache_key, json.dumps(statement_data), ex=60)
+
     #---Notifying user through the websocket---
     await manager.send_to_user(user.id,
                                "Your statement of account is ready, log in to your app to view it")
-    return [statement]
+    return statement_data
 
 
 #---Creating the endpoint that aids users in accessing their transaction history---
@@ -173,7 +192,10 @@ async def get_transaction_history(account_id: int, skip: int= 0, limit: int= Que
 
     logger.info(f"Transaction history requested for account {account_id}.")
 
-    return await run_in_threadpool(fetch_transaction_history, account_id, skip, limit, session, active_user )
+    
+    return  await run_in_threadpool(fetch_transaction_history, account_id, skip, limit, session, active_user )
+
+
 
 
 #---Creating the endpoint that gets one specific transaction---

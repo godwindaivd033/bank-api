@@ -1,6 +1,6 @@
 #---Building the account endpoint---
 from sqlmodel import Session, select
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from app.auth import get_user_with_role
 from app.models.account import Account, AccountCreate, AccountRead, AccountUpdate
 from app.database import get_session
@@ -10,6 +10,7 @@ from app.services.account_service import get_account_by_id_or_404, apply_account
 from fastapi.concurrency import run_in_threadpool
 import json
 from app.redis_client import redis_client
+from app.main import limiter
 
 
 
@@ -21,7 +22,8 @@ router= APIRouter(prefix= "/account", tags= ["accounts"])
 
 #---Creating the endpoint that enables users to create an account---
 @router.post("/", response_model=AccountRead, status_code=201)
-async def create_account(user_create: AccountCreate, session: Session = Depends(get_session), active_user: dict = Depends(get_user_with_role)):
+@limiter.limit("5/minute")
+async def create_account(request: Request, user_create: AccountCreate, session: Session = Depends(get_session), active_user: dict = Depends(get_user_with_role)):
 
     #---Getting the authenticated user's email---
     email = active_user.get("sub")
@@ -51,7 +53,7 @@ async def create_account(user_create: AccountCreate, session: Session = Depends(
     logger.info(f"Account {account.account_number} created for user {existing_user.id}.")
 
     #---Invalidate the cached account list, since it's now out of date---
-    await run_in_threadpool(redis_client.delete, f"account:{existing_user.id}")
+    await run_in_threadpool(redis_client.delete, f"accounts:{existing_user.id}")
 
     return account
 
@@ -59,7 +61,8 @@ async def create_account(user_create: AccountCreate, session: Session = Depends(
 
 #---Creating the endpoint that gets the authenticated user account---
 @router.get("/", response_model=list[AccountRead], status_code=200)
-async def get_user_account(session: Session = Depends(get_session), active_user: dict = Depends(get_user_with_role)):
+@limiter.limit("10/minute")
+async def get_user_account(request: Request, session: Session = Depends(get_session), active_user: dict = Depends(get_user_with_role)):
 
     #---Extracting user's email using the access token---
     email = active_user.get("sub")
@@ -90,7 +93,8 @@ async def get_user_account(session: Session = Depends(get_session), active_user:
 
 #---Creating the endpoint that gets one specific user account---
 @router.get("/{account_id}", response_model= AccountRead, status_code= 200)
-async def get_specific_account(account_id: int, session: Session= Depends(get_session), active_user: dict= Depends(get_user_with_role)):
+@limiter.limit("20/minute")
+async def get_specific_account(request:Request, account_id: int, session: Session= Depends(get_session), active_user: dict= Depends(get_user_with_role)):
 
 
 #---Getting the logged-in user email using the access token---
@@ -115,7 +119,7 @@ async def get_specific_account(account_id: int, session: Session= Depends(get_se
     account = await run_in_threadpool(get_account_by_id_or_404, session, account_id, user, active_user)
 
     account_data= AccountRead.model_validate(account).model_dump(mode="json")
-    await run_in_threadpool(redis_client.set, cache_key, json.dumps(account_data), exp= 60)
+    await run_in_threadpool(redis_client.set, cache_key, json.dumps(account_data), ex= 60)
 
     #---If the conditions were met, returnng the account requested---
     logger.info(f"Account {account_id} retrieved successfully.")
@@ -127,7 +131,8 @@ async def get_specific_account(account_id: int, session: Session= Depends(get_se
 
 #---Creating the endpoint that allows user to update account---
 @router.patch("/{account_id}", response_model= AccountRead, status_code= 200)
-async def update_user_account(account_id: int, user_update: AccountUpdate, session: Session= Depends(get_session), active_user: dict= Depends(get_user_with_role)):
+@limiter.limit("7/minute")
+async def update_user_account(request: Request, account_id: int, user_update: AccountUpdate, session: Session= Depends(get_session), active_user: dict= Depends(get_user_with_role)):
 
     #---Getting the logged in user by using the access token email---
     user = await run_in_threadpool(get_authenticated_user_or_404, session, active_user)
@@ -137,14 +142,15 @@ async def update_user_account(account_id: int, user_update: AccountUpdate, sessi
 
     #---If confirmation was valid, ensure that the update was executed before proceeding---
     account = await run_in_threadpool(apply_account_update, session, account, user_update, account_id)
-    await run_in_threadpool(redis_client.delete, f"account: {account_id}")
+    await run_in_threadpool(redis_client.delete, f"account:{account_id}")
     return account
 
 
 
 #---Creating the endpoint that aids in the closing of the user's account---
 @router.patch("/{account_id}/close", response_model= AccountRead, status_code= 200)
-async def close_user_account(account_id: int, session: Session= Depends(get_session), active_user: dict= Depends(get_user_with_role)):
+@limiter.limit("7/minute")
+async def close_user_account(request: Request, account_id: int, session: Session= Depends(get_session), active_user: dict= Depends(get_user_with_role)):
 
     #---Getting the user email by using the access token---
     email= active_user.get("sub")

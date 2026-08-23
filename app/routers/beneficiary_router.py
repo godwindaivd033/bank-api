@@ -10,8 +10,8 @@ from app.models.user import User
 from app.services.beneficiary_service import get_user_account, get_account_by_number, validate_not_duplicate, serialize_beneficiaries, build_beneficiary_query, get_owned_beneficiary_or_404, serialize_single_beneficiary
 from app.services.dashboard_service import get_account_or_404
 from fastapi.concurrency import run_in_threadpool
-
-
+import json
+from app.redis_client import redis_client
 
 
 
@@ -32,8 +32,10 @@ async def create_beneficiary(beneficiary_create: BeneficiaryCreate, session: Ses
     user = await run_in_threadpool(get_authenticated_user, session, active_user)
     logger.info(f"Beneficiary creation requested by user {user.id}")
 
+
+   
     #---Getting the account---
-    account= get_user_account(session, user)
+    account= await run_in_threadpool(get_user_account, session, user)
     logger.info(f"Beneficiary creation requested by user account {account.id}")
     
     #---Getting the beneficiary account---
@@ -52,6 +54,10 @@ async def create_beneficiary(beneficiary_create: BeneficiaryCreate, session: Ses
     session.add(beneficiary_created)
     session.commit()
     session.refresh(beneficiary_created)
+
+    #---Invalidating the redis cache since changes has been made---
+    logger.info(f"invalidating the cache records for account{user.id}")
+    await run_in_threadpool(redis_client.delete, f"account{user.id}")
 
     logger.info(f"Beneficiary added successfully for user {user.id}.")
 
@@ -76,18 +82,35 @@ async def get_all_beneficiaries(session: Session= Depends(get_session), active_u
     user= await run_in_threadpool(get_authenticated_user,session, active_user)
     logger.info(f"Fetching beneficiaries for user {user.id}.")
 
-    #---getting the account---
-  
-    account = await run_in_threadpool (get_account_or_404, session, user)
+    #---Getting the account from the databse---
+    account = await run_in_threadpool(get_account_or_404, session, user)
 
+    #---Making the redis client cache key---
+    cache_key= f"beneficiary:{account.id}:{skip}:{limit}"
+
+    logger.info(f"Sending request to the redis cache for the data requested")
+    cached = await run_in_threadpool(redis_client.get, cache_key)
+
+    
+    if cached:
+        logger.info(f"User request hit the redis cache")
+        return json.loads(cached)
+
+    #---If the data was not found or missed the redis cache, query the data from the database---
+    logger.info(f"Cache miss for {cache_key}, querying database.")
     owner_beneficiaries= await run_in_threadpool(lambda :session.exec(select(Beneficiary).where(Beneficiary.owner_account_id== account.id).offset(skip).limit(limit)).all())
 
     #---Getting the beneficiary account
-    response = serialize_beneficiaries(session, owner_beneficiaries)
+    response = await run_in_threadpool(serialize_beneficiaries, session, owner_beneficiaries)
+
+    logger.info(f"Retrieved {len(response)} beneficiary(ies) for user {user.id}.")
+    response_data = [r.model_dump(mode="json") for r in response]
+
+    await run_in_threadpool(redis_client.set, cache_key, json.dumps(response_data), ex=60)
 
     logger.info(f"Retrieved {len(response)} beneficiary(ies) for user {user.id}.")
 
-    return response
+    return response_data
 
 
 #---Creating the endpoint that enables users to search through beneficiaries---
@@ -102,14 +125,14 @@ async def search_beneficiaries(
     user = await run_in_threadpool(get_authenticated_user, session, active_user)
     logger.info(f"Beneficiary search requested by user {user.id}.")
 
-  #---Getting the owner's account---
+    #---Getting the owner's account---
     owner_account = await run_in_threadpool(get_account_or_404, session, user)
 
-    #---Starting the query with only this user's beneficiaries to ensure the user beneficiaries belongs to the account ---
+    #---Starting the query with only this user's beneficiaries to ensure the user beneficiaries belongs to the account---
     query = await run_in_threadpool(build_beneficiary_query, session, owner_account.id, search)
 
     #---Executing the query---
-    beneficiaries = await run_in_threadpool(lambda :session.exec(query).all())
+    beneficiaries = await run_in_threadpool(lambda: session.exec(query).all())
 
     #---Building the response---
     response = await run_in_threadpool(serialize_beneficiaries, session, beneficiaries)
@@ -117,8 +140,6 @@ async def search_beneficiaries(
     logger.info(f"Beneficiary search returned {len(response)} result(s) for user {user.id}.")
 
     return response
-
-
 
 
 
@@ -132,7 +153,8 @@ async def update_beneficiary(update_data: BeneficiaryUpdate, beneficiary_id: int
 
     account =await run_in_threadpool(get_account_or_404, session, user)
 
-    #--Getting the requested beneficiary---
+    
+    #--If not, getting the requested beneficiary---
     beneficiary = await run_in_threadpool(get_owned_beneficiary_or_404, session, beneficiary_id, account)
 
     #---Updating the nickname
@@ -144,7 +166,10 @@ async def update_beneficiary(update_data: BeneficiaryUpdate, beneficiary_id: int
 
     logger.info(f"Beneficiary {beneficiary_id} updated successfully.")
 
-    beneficiary_update = serialize_single_beneficiary(session, beneficiary)
+    beneficiary_update = await run_in_threadpool(serialize_single_beneficiary, session, beneficiary)
+
+    #---Invalidating cache for the updates made---
+    await run_in_threadpool(redis_client.delete, f"beneficiary:{beneficiary_id}")
 
     return beneficiary_update
     
@@ -160,6 +185,17 @@ async def get_beneficiary(beneficiary_id: int, session: Session= Depends(get_ses
 
     #---Get the owner account---
     owner_account = await run_in_threadpool(get_account_or_404, session, user)
+    
+    #---Making the redis cache---
+    cache_key= f"beneficiary:{beneficiary_id}"
+
+    #---Attempting grabbing of the requested data from the redis cache---
+    logger.info(f'Quering the redis cache to get the {cache_key}')
+    cached= await run_in_threadpool(redis_client.get, cache_key)
+
+    if cached:
+        logger.info("Queried data hit the redis cache")
+        return json.loads(cached)
 
     #---Getting the particular beneficiary using the beneficiary id
     beneficiary = await run_in_threadpool(get_owned_beneficiary_or_404, session, beneficiary_id, owner_account)
@@ -167,6 +203,10 @@ async def get_beneficiary(beneficiary_id: int, session: Session= Depends(get_ses
     #--Getting the beneficiary account---
     beneficiary_update = await run_in_threadpool(serialize_single_beneficiary, session, beneficiary)
 
+    #---Updating the redis cache for any invalidations---
+    beneficiary_data= [beneficiary_update.model_dump(mode= "json")]
+    await run_in_threadpool(redis_client.set, cache_key, json.dumps(beneficiary_data), ex= 60)
+
     logger.info(f"Beneficiary {beneficiary_id} retrieved successfully.")
 
-    return beneficiary_update
+    return beneficiary_data
