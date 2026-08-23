@@ -18,6 +18,7 @@ router= APIRouter(prefix= "/profile", tags= ["profile"])
 
 #---Creating the endpoint that enables user to get their profile---
 @router.get("/", response_model= UserProfileRead, status_code= 200)
+@limiter.limit("20/minute")
 async def get_profile(session: Session= Depends(get_session), active_user: dict= Depends(get_user_with_role)):
 
     #---Authenticating the user---
@@ -40,6 +41,7 @@ async def get_profile(session: Session= Depends(get_session), active_user: dict=
 
 #---Creating the endpoint that enables user to update their profile---
 @router.patch("/update", response_model= UserProfileRead, status_code= 200)
+@limiter.limit("7/minute")
 async def update_profile(profile_update: UserProfileUpdate, session: Session= Depends(get_session), active_user: dict= Depends(get_user_with_role)):
  
     #---Authenticating the user---
@@ -65,6 +67,7 @@ async def update_profile(profile_update: UserProfileUpdate, session: Session= De
 
 #---Creating the endpoint that enables a user to update password---
 @router.patch("/update_password", status_code=200)
+@limiter.limit("3/minute")
 async def change_password(
     password_update: ChangePassword,
     session: Session = Depends(get_session),
