@@ -143,6 +143,7 @@ async def update_user_account(request: Request, account_id: int, user_update: Ac
     #---If confirmation was valid, ensure that the update was executed before proceeding---
     account = await run_in_threadpool(apply_account_update, session, account, user_update, account_id)
     await run_in_threadpool(redis_client.delete, f"account:{account_id}")
+    await run_in_threadpool(redis_client.delete, f"accounts:{user.id}")
     return account
 
 
@@ -173,6 +174,7 @@ async def close_user_account(request: Request, account_id: int, session: Session
 
     logger.info(f"Account {account_id} closed successfully.")
     await run_in_threadpool(redis_client.delete, f"account:{account_id}")
+    await run_in_threadpool(redis_client.delete, f"accounts:{user.id}")
 
     logger.info("redis client data has been cleaned up.")
     return account

@@ -6,6 +6,7 @@ from app.main import limiter
 from fastapi.security import OAuth2PasswordRequestForm
 from app.models.user import User, UserRead, UserCreate
 from fastapi.concurrency import run_in_threadpool
+from app.redis_client import check_rate_limit
 
 
 
@@ -18,7 +19,13 @@ router = APIRouter(tags= ["authentication"])
 @router.post("/register", response_model= UserRead, status_code= 201)
 @limiter.limit("4/minute")
 async def reg_user(request: Request, create_data: UserCreate, session: Session= Depends(get_session)):
-   
+
+        #---SlowAPI already checked IP-based limit before this function body even runs---
+
+    #---Additional manual check: limit by the email being registered, not just IP---
+    rate_limit_key = f"register_attempts:{create_data.email}"
+    await run_in_threadpool(check_rate_limit, rate_limit_key, max_attempts=3, window_seconds=600)
+
     #---Confirming the user hasn't registered previously to prevent duplication---
     existing_user= await run_in_threadpool(lambda :session.exec(select(User).where(User.email== create_data.email)).first())
 
