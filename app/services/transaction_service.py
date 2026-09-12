@@ -10,6 +10,7 @@ from app.services.logger import logger
 from decimal import Decimal
 import json
 from app.redis_client import redis_client
+from sqlalchemy import update
 
 def get_transactions_for_statement(session: Session, account_id: int, starting_date, ending_date) -> list[Transaction]:
     return session.exec(
@@ -25,7 +26,7 @@ def get_transactions_for_statement(session: Session, account_id: int, starting_d
 
 
 
-def validate_transaction_request(session: Session, active_user: dict, transaction_create: TransactionCreate) -> Account:
+def validate_transaction_request(session: Session, active_user: dict, transaction_create: TransactionCreate, lock:bool= False) -> Account:
     email= active_user.get("sub")
     logger.info(f"Validating transaction request for {email}.")
 
@@ -37,8 +38,10 @@ def validate_transaction_request(session: Session, active_user: dict, transactio
         raise HTTPException(status_code= 404, detail= "User not found")
     
     #---Confirming that the user created an account that is stored in the database---
-    account = session.get(Account, transaction_create.account_id)
-
+    if lock:
+        account = session.exec(select(Account).where(Account.id == transaction_create.account_id).with_for_update()).first()
+    else:
+        account= session.get(Account, transaction_create.account_id)
     if not account:
         logger.warning(f"Account {transaction_create.account_id} not found.")
         raise HTTPException(status_code= 404, detail= "Account not found")
@@ -75,14 +78,12 @@ def deposit_helper_function(session: Session, transaction_create: TransactionCre
 
     logger.info(f"Processing deposit into account {account.id}.")
 
-    #---Getting the previous balance--
-    balance_before= account.balance
-
-    #---Getting the new balance---
-    balance_after= balance_before + transaction_create.amount
-     
-    # Update the account balance (tracked automatically by the session)
-    account.balance= balance_after
+    #---Atomically increase the balance in PostgreSQL---
+    result= session.exec(update(Account).where(Account.id == transaction_create.account_id).values(balance= Account.balance + transaction_create.amount).returning(Account.balance))
+    #---Getting the new balance from postgreSQL---
+    balance_after= result.one()[0]     
+    #---Work out what the balance was before this---  
+    balance_before= balance_after - transaction_create.amount 
 
     #---Generating the transaction reference---
     transaction_ref= generate_reference(TransactionReferencePrefix.DEPOSIT.value)
@@ -109,7 +110,7 @@ def deposit_helper_function(session: Session, transaction_create: TransactionCre
 
 def withdrawal_helper_function(session: Session, active_user: dict, transaction: TransactionCreate) -> Transaction:
 
-    account = validate_transaction_request(session, active_user, transaction)
+    account = validate_transaction_request(session, active_user, transaction, lock= True)
 
     logger.info(f"Processing withdrawal from account {account.id}.")
 
@@ -160,23 +161,18 @@ def make_transfer(session: Session, active_user: dict, transfer_create: Transfer
         raise HTTPException(status_code= 404, detail= "User not found")
     
     #---Getting the user account---
-    account= session.get(Account, transfer_create.from_account_id)
+    sender_account= session.get(Account, transfer_create.from_account_id)
 
-    if not account:
+    if not sender_account:
         logger.warning(f"Sender account {transfer_create.from_account_id} not found.")
         raise HTTPException(status_code= 404, detail= "Account not found")
     
     #---Verifying the ownership of the account---
-    if account.user_id != user.id and active_user.get("role") != "Admin":
-        logger.warning(f"Unauthorized transfer attempt on account {account.id} by user {user.id}.")
+    if sender_account.user_id != user.id and active_user.get("role") != "Admin":
+        logger.warning(f"Unauthorized transfer attempt on account {sender_account.id} by user {user.id}.")
         raise HTTPException(status_code= 400, detail= "Forbidden request")
     
 
-    #---Verifying the status of the account---
-    if account.status == AccountStatus.CLOSED:
-        logger.warning(f"Transfer attempted from closed account {account.id}.")
-        raise HTTPException(status_code= 400, detail= "Cannot transfer from a closed account")
-    
 
     #---Finding the receiver account using account number---
     receiver_account = session.exec(select(Account).where(Account.account_number == transfer_create.to_account_number)).first()
@@ -187,10 +183,30 @@ def make_transfer(session: Session, active_user: dict, transfer_create: Transfer
     
 
      #---Prevent self transfer---
-    if account.id == receiver_account.id:
+    if sender_account.id == receiver_account.id:
         logger.warning(f"User {user.id} attempted a self-transfer.")
         raise HTTPException(status_code=400, detail="You cannot transfer money to the same account.")
 
+    #---Lock both accounts---
+    account_ids= [sender_account.id, receiver_account.id]
+
+    #---Creating the lock---
+    locked_accounts= session.exec(select(Account).where(Account.id.in_(account_ids)).order_by(Account.id).with_for_update()).all()
+
+    #---Put the locked account into a dictionary---
+    locked_accounts_by_id= {account.id: account for account in locked_accounts}
+
+    #---Get the locked versions---
+    sender_account= locked_accounts_by_id[sender_account.id]
+    receiver_account= locked_accounts_by_id[receiver_account.id]
+
+
+    #---Verifying the status of the locked accounts---
+    if sender_account.status == AccountStatus.CLOSED:
+        logger.warning(f"Transfer attempted from closed account {sender_account.id}.")
+        raise HTTPException(status_code= 400, detail= "Cannot transfer from a closed account")
+
+    
     #---Checking receiver account status---
     if receiver_account.status == AccountStatus.CLOSED:
         logger.warning(f"Transfer attempted to closed account {receiver_account.id}.")
@@ -202,12 +218,12 @@ def make_transfer(session: Session, active_user: dict, transfer_create: Transfer
         raise HTTPException(status_code=400, detail="Amount must be greater than zero")
 
     #---Checking sufficient funds---
-    if account.balance < transfer_create.amount:
-        logger.warning(f"Insufficient funds in account {account.id}.")
+    if sender_account.balance < transfer_create.amount:
+        logger.warning(f"Insufficient funds in account {sender_account.id}.")
         raise HTTPException(status_code=400, detail="Insufficient funds")
 
     #---Saving balances before transfer---
-    sender_balance_before = account.balance
+    sender_balance_before = sender_account.balance
     receiver_balance_before = receiver_account.balance
 
     #---Calculating new balances---
@@ -215,7 +231,7 @@ def make_transfer(session: Session, active_user: dict, transfer_create: Transfer
     receiver_new_balance = receiver_balance_before + transfer_create.amount
 
     #---Updating both accounts---
-    account.balance = sender_new_balance
+    sender_account.balance = sender_new_balance
     receiver_account.balance = receiver_new_balance
 
     #---Generating one transfer reference---
@@ -223,7 +239,7 @@ def make_transfer(session: Session, active_user: dict, transfer_create: Transfer
 
     #---Creating sender transaction---
     sender_receipt = Transaction(
-        account_id = account.id,
+        account_id = sender_account.id,
         reference = reference,
         transaction_type = TransactionType.TRANSFER_OUT,
         transaction_status = TransactionStatus.SUCCESS,

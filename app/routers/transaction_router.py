@@ -141,7 +141,7 @@ async def get_statement_of_account(search: StatementSearch= Depends(), session: 
         return json.loads(cached)
 
     #---If not, getting the transactions for the statement---
-    logger.info(f"Quert for {cache_key} miss redis, querying the database for request")
+    logger.info(f"Query for {cache_key} miss redis, querying the database for request")
     transactions = await run_in_threadpool(
         get_transactions_for_statement, session, account.id, starting_date, ending_date
     )
