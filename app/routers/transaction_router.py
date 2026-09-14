@@ -9,6 +9,8 @@ from app.routers.websocket import manager
 from fastapi.concurrency import run_in_threadpool
 import json
 from app.redis_client import redis_client
+from fastapi import Header
+
 
 #---Configuring the router---
 router= APIRouter(prefix= "/transaction", tags= ["transactions"])
@@ -79,7 +81,7 @@ async def create_withdrawal_transaction(
 
 #---Creating the endpoint that aids user in carrying out transfer---
 @router.post("/transfer", response_model= TransactionRead, status_code= 201)
-async def create_transfer(transfer_create: TransferCreate, session: Session= Depends(get_session), active_user: dict= Depends(get_user_with_role)):
+async def create_transfer(transfer_create: TransferCreate, idempotency_key: str= Header(...), session: Session= Depends(get_session), active_user: dict= Depends(get_user_with_role)):
 
     logger.info("Transfer transaction requested.")
 
