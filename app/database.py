@@ -2,12 +2,14 @@
 from sqlmodel import SQLModel, Session, create_engine, select
 from app.models.user import User
 from app.auth import hash_password
+import os
 
 
 
 
-#---Creating the database link---
-db_link= "postgresql+psycopg://postgres:Daveed@localhost:5432/bank_db"
+#---Getting the database link---
+db_link= os.getenv("db_link")
+
 
 #---Creating the engine---
 engine= create_engine(db_link, echo= True)
