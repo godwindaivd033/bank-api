@@ -25,9 +25,9 @@ def get_session():
 
 
 
-ADMIN_EMAIL = "admindave331@gmail.com"
-ADMIN_PASSWORD = "strongdave1235"
-ADMIN_ROLE = "Admin"
+ADMIN_EMAIL = os.getenv("ADMIN_EMAIL")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
+ADMIN_ROLE = os.getenv("ADMIN_ROLE")
 
 
 #---seeding the admin into the database---
