@@ -125,4 +125,3 @@ def transfer(account, another_account):
     )
 
 
-@pytest.fixture
