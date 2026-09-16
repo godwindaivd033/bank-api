@@ -3,8 +3,9 @@ from sqlmodel import SQLModel, Session, create_engine, select
 from app.models.user import User
 from app.auth import hash_password
 import os
+from dotenv import load_dotenv
 
-
+load_dotenv()
 
 
 #---Getting the database link---
