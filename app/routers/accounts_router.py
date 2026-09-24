@@ -10,7 +10,8 @@ from app.services.account_service import get_account_by_id_or_404, apply_account
 from fastapi.concurrency import run_in_threadpool
 import json
 from app.redis_client import redis_client
-from app.main import limiter
+from app.limiter import limiter
+
 
 
 
@@ -51,10 +52,10 @@ async def create_account(request: Request, user_create: AccountCreate, session: 
     session.refresh(account)
 
     logger.info(f"Account {account.account_number} created for user {existing_user.id}.")
-
-    #---Invalidate the cached account list, since it's now out of date---
-    await run_in_threadpool(redis_client.delete, f"accounts:{existing_user.id}")
-
+    try:
+        await run_in_threadpool(redis_client.delete, f"accounts:{existing_user.id}")
+    except Exception as e:
+        logger.warning(f"Redis unavailable, could not invalidate cache: {e}")
     return account
 
 
@@ -73,13 +74,13 @@ async def get_user_account(request: Request, session: Session = Depends(get_sess
 
     #---Creating the cache key---
     cache_key = f"accounts:{user.id}"
-
-    #---Try cache first---
-    cached = await run_in_threadpool(redis_client.get, cache_key)
-
-    if cached:
-        logger.info(f"Cache hit for {cache_key}")
-        return json.loads(cached)
+    try:
+        cached = await run_in_threadpool(redis_client.get, cache_key)
+        if cached:
+            return json.loads(cached)
+    except Exception as e:
+        logger.warning(f"Redis unavailable, falling back to DB: {e}")
+        cached = None
 
     #---If cache missed for cache_key, query the database---
     accounts = await run_in_threadpool(lambda: session.exec(select(Account).where(Account.user_id == user.id)).all())
@@ -105,14 +106,14 @@ async def get_specific_account(request:Request, account_id: int, session: Sessio
     user = await run_in_threadpool(get_authenticated_user_or_404, session, active_user)
 
     #---Creating the cache_key---
-    cache_key= f"account:{account_id}"
-
-    #---Hit the redis first---
-    cached= await run_in_threadpool(redis_client.get, cache_key)
-
-    if cached:
-        logger.info(f"request hit the {cache_key}")
-        return json.loads(cached)
+    cache_key = f"account:{account_id}:user:{user.id}"
+    try:
+        cached = await run_in_threadpool(redis_client.get, cache_key)
+        if cached:
+            return json.loads(cached)
+    except Exception as e:
+        logger.warning(f"Redis unavailable, falling back to DB: {e}")
+        cached = None
     
     #---If request missed, query the database---
     logger.info(f'Cache miss for {cache_key}, querying the database')
@@ -142,8 +143,13 @@ async def update_user_account(request: Request, account_id: int, user_update: Ac
 
     #---If confirmation was valid, ensure that the update was executed before proceeding---
     account = await run_in_threadpool(apply_account_update, session, account, user_update, account_id)
-    await run_in_threadpool(redis_client.delete, f"account:{account_id}")
-    await run_in_threadpool(redis_client.delete, f"accounts:{user.id}")
+    try:
+        await run_in_threadpool(redis_client.delete,f"account:{account_id}:user:{user.id}")
+        await run_in_threadpool(redis_client.delete, f"account:{user.id}")
+    except Exception as e:
+        logger.warning(f"Redis unavailable, could not invalidate cache: {e}")
+        
+    
     return account
 
 
@@ -173,8 +179,10 @@ async def close_user_account(request: Request, account_id: int, session: Session
     session.refresh(account)
 
     logger.info(f"Account {account_id} closed successfully.")
-    await run_in_threadpool(redis_client.delete, f"account:{account_id}")
-    await run_in_threadpool(redis_client.delete, f"accounts:{user.id}")
-
+    try:
+        await run_in_threadpool(redis_client.delete,f"account:{account_id}:user:{user.id}")
+        await run_in_threadpool(redis_client.delete, f"account:{user.id}")
+    except Exception as e:
+        logger.warning(f"Redis is unavailable, could not invalidate cache: {e}")
     logger.info("redis client data has been cleaned up.")
     return account

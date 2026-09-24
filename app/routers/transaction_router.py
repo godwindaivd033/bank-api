@@ -10,6 +10,10 @@ from fastapi.concurrency import run_in_threadpool
 import json
 from app.redis_client import redis_client
 from fastapi import Header
+from fastapi.responses import JSONResponse
+from fastapi.encoders import jsonable_encoder
+from typing import Annotated
+from app.services.idempotency_service import check_idempotency_key, save_idempotency_key
 
 
 #---Configuring the router---
@@ -20,13 +24,27 @@ router= APIRouter(prefix= "/transaction", tags= ["transactions"])
 
 #---Creating the endpoint that helps to create a transaction request---
 @router.post("/deposit", response_model= TransactionRead, status_code= 201)
-async def create_deposit_transactions(transaction_create: TransactionCreate, session: Session= Depends(get_session), active_user: dict= Depends(get_user_with_role)):
+async def create_deposit_transactions(transaction_create: TransactionCreate, idempotency_key: Annotated[str, Header(description= "Unique key to prevent duplicate deposit")], session: Session= Depends(get_session), active_user: dict= Depends(get_user_with_role)):
+
+
+    #---Confirming that transaction isn't a duplicate---
+    existing=await run_in_threadpool(check_idempotency_key, session, idempotency_key, "/deposit")
+
+    if existing:
+        logger.info(f"Idempotency key {idempotency_key} has already been used, returning saved result")
+        return JSONResponse(content= json.load(existing.response_body), status_code= existing.status_code)
 
     logger.info("Deposit transaction requested.")
     #---Getting the user---
     user= await run_in_threadpool(get_authenticated_user_or_404, session, active_user)
 
     transaction_receipt= await run_in_threadpool (deposit_helper_function, session, transaction_create, active_user)
+
+    response_data= jsonable_encoder(TransactionRead.model_validate(transaction_receipt))
+
+    #---Adding the idempotency data---
+    logger.info("Saving idempotency data")
+    save_idempotency_key(session, idempotency_key, "/deposit", response_data, 201)
 
     session.add(transaction_receipt)
     session.commit()
@@ -44,12 +62,23 @@ async def create_deposit_transactions(transaction_create: TransactionCreate, ses
 @router.post("/withdraw", response_model=TransactionRead, status_code=201)
 async def create_withdrawal_transaction(
     transaction: TransactionCreate,
+    idempotency_key: Annotated[str, Header(description= "Unique key to prevent duplicate deposit")],
     session: Session = Depends(get_session),
     active_user: dict = Depends(get_user_with_role)
 ):
-    logger.info("Withdrawal transaction requested.")
 
-      # Getting the authenticated user (need user.id for WebSocket notification)
+
+    #---Confirming that such transaction isn't occuring twice--
+    existing= await run_in_threadpool(check_idempotency_key, session, idempotency_key, "/withdraw")
+
+    #---If existing, return result---
+    if existing:
+
+        logger.info(f"Idempotency key{idempotency_key} has been used, returning saved result")
+        return JSONResponse(content= json.load(existing.response_body), status_code= existing.status_code)
+    
+    logger.info("Withdrawal transaction requested.")
+    #---Getting the authenticated user (need user.id for WebSocket notification)---
     user = await run_in_threadpool(get_authenticated_user_or_404, session, active_user)
 
     transaction_receipt = await run_in_threadpool(
@@ -58,6 +87,13 @@ async def create_withdrawal_transaction(
         active_user,
         transaction
     )
+
+    #---Configuring the response data---
+    response_data= jsonable_encoder(TransactionRead.model_validate(transaction_receipt))
+
+    #---Add idempotency detail---
+    logger.info("Saving the idempotency data")
+    save_idempotency_key(session, idempotency_key, "/withdraw", response_data, 201)
 
     # Add transaction to database
     session.add(transaction_receipt)
@@ -69,7 +105,7 @@ async def create_withdrawal_transaction(
         f"{transaction_receipt.reference} created successfully."
     )
 
-    # Notify the user through WebSocket
+    #---Notify the user through WebSocket---
     await manager.send_to_user(
         user.id,
         f"Withdrawal of {transaction_receipt.amount} successful. "
@@ -81,9 +117,19 @@ async def create_withdrawal_transaction(
 
 #---Creating the endpoint that aids user in carrying out transfer---
 @router.post("/transfer", response_model= TransactionRead, status_code= 201)
-async def create_transfer(transfer_create: TransferCreate, idempotency_key: str= Header(...), session: Session= Depends(get_session), active_user: dict= Depends(get_user_with_role)):
+async def create_transfer(transfer_create: TransferCreate, idempotency_key: Annotated[str, Header(description="Unique key to prevent duplicate transfers")], session: Session= Depends(get_session), active_user: dict= Depends(get_user_with_role)):
 
     logger.info("Transfer transaction requested.")
+
+    #---Confirming that specific transaction isnt occuring twice---
+    existing= await run_in_threadpool(check_idempotency_key, session, idempotency_key, "/transfer", )
+
+
+    #---If existing, terminate outgoing duplicated request and return response---
+    if existing:
+        logger.info(f"Idempotency key {idempotency_key} has already been used, returning saved result")
+
+        return JSONResponse(content= json.load(existing.response_body), status_code= existing.status_code)
 
        # Getting the authenticated user (need user.id for WebSocket notification)
     user = await run_in_threadpool(get_authenticated_user_or_404, session, active_user)
@@ -94,6 +140,12 @@ async def create_transfer(transfer_create: TransferCreate, idempotency_key: str=
     session.add(sender_receipt)
     session.add(receiver_receipt)
 
+    #---Add the detail to the idempontency model for over time referencing---
+    response_data= jsonable_encoder(TransactionRead.model_validate(sender_receipt))
+
+    #---Save the idempotency details---
+    save_idempotency_key(session, idempotency_key, "/transfer", response_data, 201)
+    
     #---Saving everything together---
     session.commit()
 
@@ -105,7 +157,7 @@ async def create_transfer(transfer_create: TransferCreate, idempotency_key: str=
 
     #---Notify the user through websocket---
     await manager.send_to_user(user.id, 
-                               f'Transfer of {sender_receipt.amount} sucessful.'
+                               f'Transfer of {sender_receipt.amount} sucessful. '
                                f'New balance: {sender_receipt.balance_after}')
 
     return sender_receipt
@@ -128,6 +180,7 @@ async def get_statement_of_account(search: StatementSearch= Depends(), session: 
     starting_date= search.from_date
     ending_date= search.to_date
 
+    #--Using the helper service to validate date range---
     validate_date_range(user, starting_date, ending_date)
 
    #---making the redis cache key---
@@ -135,12 +188,16 @@ async def get_statement_of_account(search: StatementSearch= Depends(), session: 
 
     #---Try grabbing data from the redis cache---
     logger.info(f"Querying the redis cache for {cache_key}") 
-    
-    cached= await run_in_threadpool(redis_client.get, cache_key)
 
-    if cached:
-        logger.info(f"Query for {cache_key} hit the redis cache")
-        return json.loads(cached)
+    try:
+        cached= await run_in_threadpool(redis_client.get, cache_key)
+
+        if cached:
+            logger.info(f"Query for {cache_key} hit the redis cache")
+            return json.loads(cached)
+    except Exception as e:
+        logger.warning(f"Redis unavailable, falling back to database: {e}")
+        cached= None
 
     #---If not, getting the transactions for the statement---
     logger.info(f"Query for {cache_key} miss redis, querying the database for request")
@@ -183,7 +240,7 @@ async def get_statement_of_account(search: StatementSearch= Depends(), session: 
     await run_in_threadpool(redis_client.set, cache_key, json.dumps(statement_data), ex=60)
 
     #---Notifying user through the websocket---
-    await manager.send_to_user(user.id,
+    await manager.send_to_user(user.id ,
                                "Your statement of account is ready, log in to your app to view it")
     return statement_data
 
