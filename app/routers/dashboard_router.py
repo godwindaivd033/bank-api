@@ -9,7 +9,7 @@ from app.models.dashboard import DashboardRead
 from app.services.logger import logger
 from app.services.dashboard_service import get_account_or_404, serialize_transactions
 from fastapi.concurrency import run_in_threadpool
-from app.main import limiter
+from app.limiter import limiter
 
 
 router= APIRouter(prefix= "/dashboard", tags= ["beneficiary"])

@@ -3,8 +3,9 @@ from sqlmodel import SQLModel, Session, create_engine, select
 from app.models.user import User
 from app.auth import hash_password
 import os
+from dotenv import load_dotenv
 
-
+load_dotenv()
 
 
 #---Getting the database link---
@@ -42,7 +43,7 @@ def create_admin():
         email= ADMIN_EMAIL,
         password= hash_password(ADMIN_PASSWORD),
         phone_number= "+23470669865",
-        role= "Admin",
+        role= ADMIN_ROLE,
         is_active= True)
         
         #--Handing it over to the database--

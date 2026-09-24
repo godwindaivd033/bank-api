@@ -14,8 +14,9 @@ from test.test_redis import router as redis_router
 from fastapi import FastAPI, Request
 from app.database import create_db_and_table, create_admin
 from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from app.limiter import limiter
 
 
 #---Configuring the database---
@@ -28,10 +29,9 @@ async def lifespan(app: FastAPI):
 app= FastAPI(lifespan= lifespan)
 
 #---Configuration for the rate limiter---
-limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-
+app.add_middleware(SlowAPIMiddleware)
 
 
 

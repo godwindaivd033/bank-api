@@ -2,7 +2,7 @@ from sqlmodel import Session, select
 from app.auth import  hash_password, verify_password, create_access_token
 from app.database import get_session
 from fastapi import  Depends, HTTPException, APIRouter, Request
-from app.main import limiter
+from app.limiter import limiter
 from fastapi.security import OAuth2PasswordRequestForm
 from app.models.user import User, UserRead, UserCreate
 from fastapi.concurrency import run_in_threadpool
